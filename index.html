@@ -663,19 +663,41 @@ class Slice {
 		}
 		
 		this.SVGelement.addEventListener("mousedown", this);
+		this.SVGelement.addEventListener("touchstart", this);
+
 	}
 	
 	handleEvent(event) {
 		if(event.type == "mousedown") {
-			if(!this.isSingle) {	
-				this.toSingle();
-				takeSlice(this.sliceNumber);
+			if(alreadyDragged(this)) {
+				return;
 			}
-			this.goToTop();
-			this.isDragged = true;
-			this.cancelFalling();
+			this.startDrag();
 			clickAndDrag.slice = this;
 		}
+		if(event.type == "touchstart") {
+			event.preventDefault();
+			if(!this.isSingle) {
+				this.startDrag();
+				this.undrag();
+				return;
+			}
+			if(!alreadyDragged(this)) {
+				let eventInfo = event.changedTouches[0];
+				addDragSlice(this, eventInfo);
+				this.cancelFalling();
+			}
+		}
+	}
+	
+	startDrag() {
+		if(!this.isSingle) {	
+			this.toSingle();
+			takeSlice(this.sliceNumber);
+		}
+		this.goToTop();
+		this.isDragged = true;
+		this.cancelFalling();
 	}
 	
 	moveTo(x, y) {
@@ -742,31 +764,44 @@ class Slice {
 		this.moveTo(0,0);
 	}
 	
-	onScreen() {
-		if(!this.inBounds()) {
+	onScreen(touchscreen) {
+		let boundMinX = 0;
+		let boundWidth = canvasWidth;
+		let boundHeight = canvasHeight;
+		
+		if(touchscreen) {
+			boundMinX = 10;
+			boundWidth = canvasWidth-20;
+			boundHeight = canvasHeight-20;
+		}
+		
+		if(!this.inBounds(touchscreen)) {
 			return false;
 		}
-		if(this.cornerPointInside()) {
+		if(this.cornerPointInside(boundMinX, boundWidth, boundHeight)) {
 			return true;
 		}
-		if(this.cornerIntersects()) {
+		if(this.cornerIntersects(boundMinX, boundWidth, boundHeight)) {
 			return true;
 		}
 		
 		return false;
 	}
 	
-	inBounds() {
+	inBounds(touchscreen) {
+		if(touchscreen) {
+			return this.previousX <= this.maxX - 10 && this.previousX >= this.minX + 10 && this.previousY <= this.maxY - 10;
+		}
 		return this.previousX <= this.maxX && this.previousX >= this.minX && this.previousY <= this.maxY;
 	}
 	
-	cornerIntersects() {
-		let intersections1 = document.elementsFromPoint(0, canvasHeight-1);
+	cornerIntersects(boundMinX, boundWidth, boundHeight) {
+		let intersections1 = document.elementsFromPoint(boundMinX, boundHeight-1);
 		if(intersections1.includes(this.SVGelement)) {
 			return true;
 		}
 		
-		let intersections2 = document.elementsFromPoint(canvasWidth-1, canvasHeight-1);
+		let intersections2 = document.elementsFromPoint(boundWidth-1, boundHeight-1);
 		if(intersections2.includes(this.SVGelement)) {
 			return true;
 		}
@@ -774,11 +809,11 @@ class Slice {
 		return false;
 	}
 
-	cornerPointInside() {
+	cornerPointInside(boundMinX, boundWidth, boundHeight) {
 		for(let i = 0; i<this.cornerPoints.length; i++) {
 			let x = (this.cornerPoints[i][0]+this.previousX)*this.scale;
 			let y = (this.cornerPoints[i][1]+this.previousY)*this.scale;
-			if(x>0 && x<canvasWidth && y<canvasHeight) {
+			if(x>boundMinX && x<boundWidth && y<boundHeight) {
 				return true;
 			}
 		}
@@ -1030,6 +1065,8 @@ var pizzaElement = document.getElementById("pizzaOink");
 
 hideScores();
 
+var clickAndDragMobile = {};
+
 var clickAndDrag = {
 	"startX": 0,
 	"startY": 0,
@@ -1039,6 +1076,11 @@ var clickAndDrag = {
 window.addEventListener("mousedown", mouseDown);
 window.addEventListener("mousemove", mouseMove);
 window.addEventListener("mouseup", mouseUp);
+
+window.addEventListener("touchmove", touchMove);
+window.addEventListener("touchend", touchEnd);
+window.addEventListener("touchcancel", touchCancel);
+
 
 function mouseDown(event) {
 
@@ -1057,28 +1099,98 @@ function mouseMove(event) {
 	let mouseY = event.clientY - canvasRect.top;
 
 	if(clickAndDrag.slice !== undefined) {
-		clickAndDrag.slice.moveBy((mouseX-clickAndDrag.startX)*0.5, (mouseY-clickAndDrag.startY)*0.5);
+		moveSlice(clickAndDrag.slice, mouseX, mouseY, clickAndDrag.startX, clickAndDrag.startY);
 	}
 }
 
 function mouseUp(event) {
 	if(clickAndDrag.slice !== undefined) {
-		clickAndDrag.slice.undrag();
-		if(!clickAndDrag.slice.onScreen()) {
-			disappearSlice(clickAndDrag.slice);
-			lastSliceAction = "disappear";
-		}
-		let piggyAtCursor = piggyAtPoint(event.clientX, event.clientY);
-		if(piggyAtCursor[0]) {
-			let piggy = piggyAtCursor[1];
-			if(piggy.canEat) {
-				eatSlice(piggy, clickAndDrag.slice);
-				lastSliceAction = "eat";
-			}
-		}
+		endDragSlice(clickAndDrag.slice, event.clientX, event.clientY, false);
 		clickAndDrag.slice = undefined;
 	}
+}
+
+function alreadyDragged(slice) {
+	if(clickAndDrag.slice == slice) {
+		return true;
+	}
+	let keys = Object.keys(clickAndDragMobile);
+	for(let i = 0; i<keys.length; i++) {
+		let dragItem = clickAndDragMobile[keys[i]];
+		if(dragItem.slice == slice) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function addDragSlice(slice, eventInfo) {
+	let identifier = eventInfo.identifier;
 	
+	let canvasRect = canvas.getBoundingClientRect();
+	let startX = eventInfo.clientX - canvasRect.left;
+	let startY = eventInfo.clientY - canvasRect.top;
+	
+	let dragItem = {"slice": slice, "identifier": identifier, "startX": startX, "startY": startY};
+	
+	clickAndDragMobile[identifier] = dragItem;
+}
+
+function touchMove(event) {
+	event.preventDefault();
+	let canvasRect = canvas.getBoundingClientRect();
+	let touches = event.changedTouches;
+	
+	for(let i = 0; i<touches.length; i++) {
+
+		let touch = touches[i];
+		if(clickAndDragMobile[touch.identifier] != undefined) {
+			
+			let dragItem = clickAndDragMobile[touch.identifier];
+			
+			let x = touch.clientX - canvasRect.left;
+			let y = touch.clientY - canvasRect.top;
+			
+			moveSlice(dragItem.slice, x, y, dragItem.startX, dragItem.startY);
+		}
+	}
+}
+
+function touchEnd(event) {
+	let touches = event.changedTouches;
+	for(let i = 0; i<touches.length; i++) {
+		let touch = touches[i];
+		if(clickAndDragMobile[touch.identifier] != undefined) {
+			endDragSlice(clickAndDragMobile[touch.identifier].slice, touch.clientX, touch.clientY, true);
+			delete clickAndDragMobile[touch.identifier];
+		}
+	}
+}
+
+function touchCancel(event) {
+	touchEnd(event);
+}
+
+function endDragSlice(slice, x, y, touchscreen) {
+
+	slice.undrag();
+	if(!slice.onScreen(touchscreen)) {
+		disappearSlice(slice);
+		lastSliceAction = "disappear";
+	}
+	let piggyAtCursor = piggyAtPoint(x, y);
+	if(piggyAtCursor[0]) {
+		let piggy = piggyAtCursor[1];
+		if(piggy.canEat) {
+			eatSlice(piggy, slice);
+			lastSliceAction = "eat";
+		}
+	}
+
+}
+
+function moveSlice(slice, eventX, eventY, startX, startY) {
+	slice.moveBy((eventX-startX)*0.5, (eventY-startY)*0.5);
 }
 
 function piggyAtPoint(x, y) {
